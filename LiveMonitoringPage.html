@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>서울시 스마트 제설 소요 판단 시스템</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            overflow: hidden;
+        }
+
+        :root {
+            --risk-high: #EF4444;
+            --risk-mid: #F59E0B;
+            --risk-low: #10B981;
+            --map-bg: #f8fafc;
+        }
+
+        body.color-blind-mode {
+            --risk-high: #D55E00;
+            --risk-mid: #E69F00;
+            --risk-low: #0072B2;
+        }
+
+        #map { height: 100vh; width: 100vw; z-index: 1; }
+
+        .sidebar-transition {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        .leaflet-popup-content-wrapper {
+            border-radius: 0.75rem;
+            padding: 0;
+            overflow: hidden;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+        .leaflet-popup-content { margin: 0; width: 280px !important; }
+        .leaflet-container a.leaflet-popup-close-button {
+            color: white; font-size: 18px; padding: 8px; 
+        }
+
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        .live-indicator { animation: blink 2s infinite; }
+        
+        /* 도로명 라벨 스타일 */
+        .road-label {
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #334155;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            white-space: nowrap;
+            font-family: 'Noto Sans KR', sans-serif;
+        }
+
+        /* 집중 관리 구역 라벨 스타일 (기본: 구 이름만 표시) */
+        .zone-label-basic {
+            background: rgba(255, 255, 255, 0.6);
+            border: 1px solid #94a3b8;
+            border-radius: 12px;
+            padding: 2px 8px;
+            color: #475569;
+            font-size: 11px;
+            font-weight: 700;
+            text-align: center;
+            white-space: nowrap;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        
+        /* 집중 관리 구역 호버 스타일 (상세 내용) */
+        .zone-label-detail {
+            background: #fff;
+            border: 2px solid #ef4444;
+            color: #b91c1c;
+            font-size: 12px;
+            padding: 4px 12px;
+            z-index: 1000;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 900: '#1e3a8a' }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-100 text-slate-800">
+
+    <div id="map"></div>
+
+    <button onclick="toggleSidebar()" class="fixed bottom-6 right-6 z-50 bg-brand-600 text-white p-4 rounded-full shadow-lg md:hidden hover:bg-brand-500 transition-colors focus:outline-none">
+        <i class="fa-solid fa-bars text-xl"></i>
+    </button>
+
+    <aside id="sidebar" class="fixed inset-y-0 left-0 w-full md:w-96 bg-white/95 backdrop-blur-md shadow-2xl z-40 transform -translate-x-full md:translate-x-0 sidebar-transition flex flex-col h-full md:h-auto md:m-4 md:rounded-2xl md:border md:border-slate-200 md:max-h-[calc(100vh-2rem)]">
+        
+        <div class="p-5 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-slate-50 to-white md:rounded-t-2xl">
+            <div>
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-snowflake text-brand-500 text-xl"></i>
+                    <h1 class="font-bold text-lg text-slate-800">서울시 제설 모니터링</h1>
+                </div>
+                <div class="flex items-center gap-2 mt-1">
+                    <span class="live-indicator w-2 h-2 bg-red-500 rounded-full"></span>
+                    <span class="text-xs text-slate-500 font-medium">집중 관리 구역 현황 (14:05 기준)</span>
+                </div>
+            </div>
+            <button onclick="toggleSidebar()" class="md:hidden text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark text-2xl"></i>
+            </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-6">
+            <div class="bg-gradient-to-br from-brand-500 to-brand-600 rounded-xl p-5 text-white shadow-lg relative overflow-hidden">
+                <div class="absolute top-0 right-0 opacity-10 transform translate-x-2 -translate-y-2">
+                    <i class="fa-solid fa-cloud-showers-heavy text-9xl"></i>
+                </div>
+                <div class="relative z-10">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <div class="text-brand-100 text-sm mb-1">현재 서울 기온</div>
+                            <div class="text-4xl font-bold">-1.2°C</div>
+                            <div class="text-sm mt-2 flex items-center gap-1"><i class="fa-solid fa-wind"></i> 체감 -4.5°C</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="bg-white/20 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-semibold mb-2 inline-block">대설주의보</div>
+                            <div class="text-right">
+                                <div class="text-xs text-brand-100">평균 적설량</div>
+                                <div class="text-xl font-bold">3.8 cm</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider">위험도 필터 (Risk Level)</label>
+                <div class="bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
+                    <label class="flex items-center p-3 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors group">
+                        <input type="checkbox" checked onchange="toggleRisk('high')" class="w-5 h-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+                        <div class="ml-3 flex-1">
+                            <div class="text-sm font-bold text-slate-700 group-hover:text-slate-900">고위험 도로 (긴급)</div>
+                            <div class="text-xs text-slate-500">적설 > 5cm, 급경사 골목</div>
+                        </div>
+                        <div class="w-8 h-1.5 rounded-full shadow-sm" style="background-color: var(--risk-high);"></div>
+                    </label>
+                    <div class="border-t border-slate-100 my-1"></div>
+                    <label class="flex items-center p-3 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors group">
+                        <input type="checkbox" checked onchange="toggleRisk('mid')" class="w-5 h-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+                        <div class="ml-3 flex-1">
+                            <div class="text-sm font-bold text-slate-700 group-hover:text-slate-900">중위험 도로 (주의)</div>
+                            <div class="text-xs text-slate-500">적설 3~5cm, 이면도로</div>
+                        </div>
+                        <div class="w-8 h-1.5 rounded-full shadow-sm" style="background-color: var(--risk-mid);"></div>
+                    </label>
+                    <div class="border-t border-slate-100 my-1"></div>
+                    <label class="flex items-center p-3 hover:bg-slate-50 rounded-lg cursor-pointer transition-colors group">
+                        <input type="checkbox" checked onchange="toggleRisk('low')" class="w-5 h-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500">
+                        <div class="ml-3 flex-1">
+                            <div class="text-sm font-bold text-slate-700 group-hover:text-slate-900">저위험 도로 (완료)</div>
+                            <div class="text-xs text-slate-500">제설차 작업 완료 구간</div>
+                        </div>
+                        <div class="w-8 h-1.5 rounded-full shadow-sm" style="background-color: var(--risk-low);"></div>
+                    </label>
+                </div>
+            </div>
+            
+            <!-- 집중 관리 구역 토글 -->
+            <div class="space-y-3">
+                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider">지도 설정</label>
+                <div class="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200">
+                    <div class="flex flex-col">
+                        <span class="text-sm font-medium text-slate-700">집중 관리 구역(Hotspots)</span>
+                        <span class="text-[10px] text-slate-400">취약 지역 중심 경계 표시</span>
+                    </div>
+                    <button id="btn-zone" onclick="toggleZones()" class="relative inline-flex h-6 w-11 items-center rounded-full bg-brand-600 transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
+                        <span id="toggle-zone-circle" class="translate-x-6 inline-block h-4 w-4 transform rounded-full bg-white transition-transform"></span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+        // --- 1. Data Simulation ---
+        
+        const seoulRoadsData = [
+            { 
+                id: 1, 
+                name: "평창문화로 (북악스카이웨이)", 
+                path: [
+                    [37.6120, 126.9750], [37.6130, 126.9765], [37.6145, 126.9780], 
+                    [37.6135, 126.9800], [37.6110, 126.9820]
+                ],
+                risk: "high", depth: 7.2, slope: "15° (급경사)", status: "대기중", 
+                time: "50분", personnel: "4명", contact: "종로구청 도로과"
+            },
+            { 
+                id: 2, 
+                name: "독서당로 언덕", 
+                path: [
+                    [37.5410, 127.0100], [37.5425, 127.0120], [37.5440, 127.0110]
+                ],
+                risk: "high", depth: 6.5, slope: "12° (급경사)", status: "장비이동중", 
+                time: "30분", personnel: "3명", contact: "성동구청 안전과"
+            },
+            { 
+                id: 3, 
+                name: "테헤란로 (포스코사거리)", 
+                path: [
+                    [37.5000, 127.0300], [37.5005, 127.0350], [37.5010, 127.0400], [37.5015, 127.0450]
+                ],
+                risk: "low", depth: 1.2, slope: "평지", status: "제설완료", 
+                time: "-", personnel: "-", contact: "강남구청 도로과"
+            },
+            { 
+                id: 4, 
+                name: "신림로 이면도로 (고시촌)", 
+                path: [
+                    [37.4780, 126.9300], [37.4770, 126.9320], [37.4760, 126.9290], [37.4750, 126.9310]
+                ],
+                risk: "mid", depth: 4.5, slope: "8° (언덕)", status: "작업중", 
+                time: "1시간 20분", personnel: "2명", contact: "관악구청 제설팀"
+            },
+            // 여의도 쪽 도로 (문제 없음 예시)
+            {
+                id: 8,
+                name: "여의대로 (IFC몰)",
+                path: [
+                    [37.523, 126.925], [37.525, 126.926], [37.527, 126.927]
+                ],
+                risk: "low", depth: 0.5, slope: "평지", status: "이상없음",
+                time: "-", personnel: "-", contact: "영등포구청 도로과"
+            }
+        ];
+
+        // --- 2. Intensive Management Zones (Hotspots) ---
+        // 해방촌 삭제됨
+        // 여의도(영등포), 잠실(송파) 추가됨 (문제 없는 곳도 포함)
+        
+        const zonesGeoJSON = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": { "zone_name": "북악산 급경사 집중관리구역", "admin_dist": "종로구", "status": "alert" },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [126.968, 37.605], [126.985, 37.605], [126.990, 37.620], 
+                            [126.980, 37.630], [126.965, 37.620], [126.968, 37.605]
+                        ]]
+                    }
+                },
+                {
+                    "type": "Feature",
+                    "properties": { "zone_name": "테헤란로 오피스 밀집구역", "admin_dist": "강남구", "status": "safe" },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [127.025, 37.495], [127.065, 37.500], [127.060, 37.515], 
+                            [127.020, 37.510], [127.025, 37.495]
+                        ]]
+                    }
+                },
+                {
+                     "type": "Feature",
+                    "properties": { "zone_name": "대학동(고시촌) 주택 밀집구역", "admin_dist": "관악구", "status": "warning" },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [126.920, 37.470], [126.940, 37.472], [126.945, 37.485], 
+                            [126.925, 37.485], [126.920, 37.470]
+                        ]]
+                    }
+                },
+                // New: 여의도 금융지구 (문제 없음)
+                {
+                     "type": "Feature",
+                    "properties": { "zone_name": "여의도 금융지구 관리구역", "admin_dist": "영등포구", "status": "safe" },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [126.920, 37.520], [126.935, 37.520], [126.940, 37.535], 
+                            [126.925, 37.535], [126.920, 37.520]
+                        ]]
+                    }
+                },
+                 // New: 잠실 아파트 단지 (문제 없음)
+                {
+                     "type": "Feature",
+                    "properties": { "zone_name": "잠실 대단지 아파트 구역", "admin_dist": "송파구", "status": "safe" },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [127.090, 37.510], [127.115, 37.510], [127.110, 37.525], 
+                            [127.085, 37.520], [127.090, 37.510]
+                        ]]
+                    }
+                }
+            ]
+        };
+
+        // --- 3. Map Initialization ---
+        const map = L.map('map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([37.5400, 127.0000], 12); // 뷰 포인트 약간 조정
+
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19,
+            subdomains: 'abcd'
+        }).addTo(map);
+
+        // --- 4. Rendering Logic ---
+        let roadLayers = [];
+        let zoneLayer = null;
+
+        function getRiskColorVar(risk) {
+            const style = getComputedStyle(document.body);
+            if (risk === 'high') return style.getPropertyValue('--risk-high').trim();
+            if (risk === 'mid') return style.getPropertyValue('--risk-mid').trim();
+            return style.getPropertyValue('--risk-low').trim();
+        }
+
+        // A. 집중 관리 구역(Hotspots) 그리기
+        function renderZones() {
+            if (zoneLayer) map.removeLayer(zoneLayer);
+            
+            zoneLayer = L.geoJSON(zonesGeoJSON, {
+                style: function(feature) {
+                    // 상태에 따른 테두리 색상
+                    let borderColor = '#ef4444'; // Alert (Red)
+                    if (feature.properties.status === 'safe') borderColor = '#3b82f6'; // Safe (Blue)
+                    if (feature.properties.status === 'warning') borderColor = '#f59e0b'; // Warning (Amber)
+
+                    return {
+                        color: borderColor,
+                        weight: 2,
+                        dashArray: '4, 6', // 점선
+                        opacity: 0.8,
+                        fillColor: borderColor, 
+                        fillOpacity: 0.05 // 투명도를 대폭 낮춤 (내부 도로가 잘 보이도록)
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    // 1. 기본 툴팁: 구 이름만 표시 (admin_dist)
+                    layer.bindTooltip(feature.properties.admin_dist, {
+                        permanent: true,
+                        direction: 'center',
+                        className: 'zone-label-basic' 
+                    });
+                    
+                    // 2. 마우스 오버 이벤트: 상세 내용 표시
+                    layer.on('mouseover', function (e) {
+                        this.setStyle({
+                            weight: 3,
+                            fillOpacity: 0.15
+                        });
+                        
+                        // 기존 툴팁 내용을 구역 전체 이름으로 변경하고 스타일 업데이트
+                        const tooltip = this.getTooltip();
+                        if (tooltip) {
+                            tooltip.setContent(feature.properties.zone_name);
+                            
+                            // Leaflet Tooltip의 DOM Element에 접근하여 클래스 교체
+                            const el = tooltip.getElement();
+                            if (el) {
+                                el.classList.remove('zone-label-basic');
+                                el.classList.add('zone-label-detail');
+                            }
+                        }
+                    });
+
+                    // 3. 마우스 아웃 이벤트: 원래대로 복구
+                    layer.on('mouseout', function (e) {
+                        zoneLayer.resetStyle(this);
+                        
+                        const tooltip = this.getTooltip();
+                        if (tooltip) {
+                            tooltip.setContent(feature.properties.admin_dist);
+                            
+                             const el = tooltip.getElement();
+                            if (el) {
+                                el.classList.remove('zone-label-detail');
+                                el.classList.add('zone-label-basic');
+                            }
+                        }
+                    });
+                }
+            }).addTo(map);
+        }
+
+        // B. 도로(Polyline) 그리기
+        function renderRoads() {
+            roadLayers.forEach(l => map.removeLayer(l));
+            roadLayers = [];
+
+            seoulRoadsData.forEach(data => {
+                const isVisible = document.querySelector(`input[onchange="toggleRisk('${data.risk}')"]`).checked;
+                if (!isVisible) return;
+
+                const color = getRiskColorVar(data.risk);
+                
+                const polyline = L.polyline(data.path, {
+                    color: color,
+                    weight: data.risk === 'high' ? 8 : 6,
+                    opacity: 0.9, // 도로 선명도 증가
+                    lineCap: 'round',
+                    lineJoin: 'round',
+                    pane: 'overlayPane' // 구역보다 위에 그려지도록 보장
+                }).addTo(map);
+
+                // 팝업 컨텐츠
+                const popupContent = `
+                    <div class="bg-white">
+                        <div class="bg-${data.risk === 'high' ? 'red' : (data.risk === 'mid' ? 'amber' : 'emerald')}-500 h-2 w-full"></div>
+                        <div class="p-4">
+                            <h3 class="font-bold text-slate-800 text-lg mb-1 leading-tight">${data.name}</h3>
+                            <div class="flex gap-2 mb-3 mt-2">
+                                <span class="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">${data.slope}</span>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-3 text-sm mb-3">
+                                <div class="bg-slate-50 p-2 rounded border border-slate-100">
+                                    <div class="text-xs text-slate-500">현재 적설량</div>
+                                    <div class="font-mono font-bold text-slate-800">${data.depth} cm</div>
+                                </div>
+                                <div class="bg-slate-50 p-2 rounded border border-slate-100">
+                                    <div class="text-xs text-slate-500">예상 작업시간</div>
+                                    <div class="font-bold text-slate-800">${data.time}</div>
+                                </div>
+                            </div>
+
+                            <div class="space-y-2 text-sm border-t border-slate-100 pt-3">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-slate-500 text-xs"><i class="fa-solid fa-users mr-1"></i>투입 인원</span>
+                                    <span class="font-bold text-slate-700">${data.personnel}</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-slate-500 text-xs"><i class="fa-solid fa-building-user mr-1"></i>관할 부서</span>
+                                    <span class="font-medium text-slate-600 text-xs">${data.contact}</span>
+                                </div>
+                            </div>
+                            
+                            <a href="tel:120" class="block w-full mt-4 bg-slate-800 text-white text-center text-xs py-2.5 rounded hover:bg-slate-700 transition-colors no-underline">
+                                <i class="fa-solid fa-phone mr-1"></i> 관련 기관 연결 (120)
+                            </a>
+                        </div>
+                    </div>
+                `;
+                polyline.bindPopup(popupContent);
+                
+                polyline.bindTooltip(data.name, {
+                    sticky: true, 
+                    className: 'road-label'
+                });
+
+                roadLayers.push(polyline);
+
+                if(data.risk === 'high') {
+                    let increasing = false;
+                    setInterval(() => {
+                        if(!map.hasLayer(polyline)) return;
+                        let op = polyline.options.opacity;
+                        if (op >= 1.0) increasing = false;
+                        if (op <= 0.6) increasing = true;
+                        polyline.setStyle({ opacity: increasing ? op + 0.05 : op - 0.05 });
+                    }, 100);
+                }
+            });
+        }
+
+        // --- 5. Interactions ---
+
+        window.toggleRisk = function(type) {
+            renderRoads();
+        }
+
+        let zonesVisible = true;
+        window.toggleZones = function() {
+            zonesVisible = !zonesVisible;
+            const btn = document.getElementById('btn-zone');
+            const circle = document.getElementById('toggle-zone-circle');
+            
+            if (zonesVisible) {
+                renderZones();
+                btn.classList.replace('bg-slate-300', 'bg-brand-600');
+                circle.classList.add('translate-x-6');
+                circle.classList.remove('translate-x-1');
+            } else {
+                if(zoneLayer) map.removeLayer(zoneLayer);
+                btn.classList.replace('bg-brand-600', 'bg-slate-300');
+                circle.classList.remove('translate-x-6');
+                circle.classList.add('translate-x-1');
+            }
+        }
+
+        window.toggleSidebar = function() {
+            const sidebar = document.getElementById('sidebar');
+            if (window.innerWidth < 768) {
+                if (sidebar.classList.contains('transform')) {
+                    sidebar.classList.remove('-translate-x-full');
+                } else {
+                    sidebar.classList.add('-translate-x-full');
+                }
+            } else {
+                sidebar.classList.toggle('-translate-x-full');
+            }
+        }
+
+        window.toggleColorBlind = function() {
+            document.body.classList.toggle('color-blind-mode');
+            const btnText = document.getElementById('cb-text');
+            const isModeOn = document.body.classList.contains('color-blind-mode');
+            btnText.textContent = isModeOn ? "색각 이상 모드 끄기" : "색각 이상 모드 켜기";
+            renderRoads();
+        }
+
+        function init() {
+            renderZones(); 
+            renderRoads();     
+            
+            if (window.innerWidth < 768) {
+                document.getElementById('sidebar').classList.add('-translate-x-full');
+            } else {
+                document.getElementById('sidebar').classList.remove('-translate-x-full');
+            }
+        }
+        
+        init();
+
+    </script>
+</body>
+</html>

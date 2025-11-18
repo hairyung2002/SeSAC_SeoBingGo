@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>서울시 제설 경로 최적화 시스템</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    
+    <!-- Chart.js (Graph) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            overflow: hidden;
+            background-color: #f8fafc;
+        }
+
+        /* 디자인 시스템 변수 */
+        :root {
+            --brand-primary: #3b82f6;
+            --brand-secondary: #64748b;
+            --accent-success: #10B981;
+            --accent-warning: #F59E0B;
+            --accent-danger: #EF4444;
+        }
+
+        #map { height: 100vh; width: 100vw; z-index: 1; }
+
+        .panel-transition {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        .snow-plow-icon {
+            font-size: 20px;
+            color: var(--brand-primary);
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+            transition: all 0.5s linear;
+        }
+
+        /* 편집 핸들 (Edit Handle) 스타일 */
+        .edit-handle {
+            width: 14px;
+            height: 14px;
+            background: white;
+            border: 3px solid var(--brand-primary);
+            border-radius: 50%;
+            cursor: move; /* 이동 커서 */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            transition: transform 0.1s;
+        }
+        /* 대체 경로 핸들 스타일 */
+        .edit-handle.alt {
+            border-color: #94a3b8;
+        }
+        
+        .edit-handle:hover {
+            transform: scale(1.3);
+            background: var(--brand-primary);
+            border-color: white;
+        }
+        .edit-handle.alt:hover {
+            background: #94a3b8;
+        }
+        
+        /* 편집 모드일 때 지도 커서 변경 */
+        .leaflet-container.edit-mode {
+            cursor: crosshair;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 180px;
+            width: 100%;
+        }
+
+        /* 숨겨진 버튼 스타일 */
+        .hidden-trigger-btn {
+            background: white;
+            color: white; /* 텍스트 숨김 */
+            border: 1px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .hidden-trigger-btn:hover {
+            color: #94a3b8; /* 호버 시 텍스트 보임 */
+            border-color: #e2e8f0;
+            background: #f8fafc;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 900: '#1e3a8a' }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-100 text-slate-800">
+
+    <!-- Map Area -->
+    <div id="map"></div>
+
+    <!-- Mobile Toggle Button -->
+    <button onclick="togglePanel()" class="fixed top-6 right-6 z-50 bg-white text-slate-700 p-3 rounded-full shadow-lg md:hidden hover:bg-slate-50 transition-colors focus:outline-none border border-slate-200">
+        <i class="fa-solid fa-chart-pie text-lg"></i>
+    </button>
+    
+    <!-- Edit Mode Toast Message (Floating) -->
+    <div id="edit-toast" class="fixed top-6 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-xl z-50 hidden flex items-center gap-3">
+        <div class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+        <span class="text-sm font-bold">고급 편집 모드</span>
+        <span class="text-xs text-slate-400">모든 경로의 점을 드래그하여 수정하세요</span>
+    </div>
+
+    <!-- Right Panel -->
+    <aside id="right-panel" class="fixed inset-y-0 right-0 w-full md:w-[420px] bg-white/95 backdrop-blur-md shadow-2xl z-40 transform translate-x-full md:translate-x-0 panel-transition flex flex-col h-full md:h-auto md:m-6 md:rounded-2xl md:border md:border-slate-200 md:max-h-[calc(100vh-3rem)]">
+        
+        <!-- Header -->
+        <div class="p-5 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-slate-50 to-white md:rounded-t-2xl">
+            <div>
+                <div class="flex items-center gap-2">
+                    <div class="bg-brand-100 text-brand-600 p-1.5 rounded-lg">
+                        <i class="fa-solid fa-route text-sm"></i>
+                    </div>
+                    <h1 class="font-bold text-lg text-slate-800">제설 경로 최적화</h1>
+                </div>
+                <p class="text-xs text-slate-500 mt-1 ml-1">AI 기반 실시간 경로 산출 (v2.5)</p>
+            </div>
+            <button onclick="togglePanel()" class="md:hidden text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+        </div>
+
+        <!-- Scrollable Content -->
+        <div class="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-6">
+            
+            <!-- Alert Banner -->
+            <div id="alert-box" class="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3 hidden">
+                <i class="fa-solid fa-triangle-exclamation text-amber-500 mt-1"></i>
+                <div>
+                    <h4 class="text-sm font-bold text-amber-800">제설 인력 부족 경고</h4>
+                    <p class="text-xs text-amber-700 mt-1">종로구 3구역 배정 가능 인원(2명)이 권장 인원(4명)보다 부족합니다.</p>
+                </div>
+            </div>
+
+            <!-- Metrics Cards (Updated) -->
+            <div class="grid grid-cols-2 gap-3">
+                <div class="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center group hover:border-brand-200 transition-colors">
+                    <div class="text-xs text-slate-500 mb-1">총 예상 소요시간</div>
+                    <div class="text-2xl font-bold text-slate-800 group-hover:text-brand-600">2시간 15분</div>
+                    <div class="text-xs font-medium text-emerald-600 mt-1 bg-emerald-50 inline-block px-2 py-0.5 rounded-full">
+                        <i class="fa-solid fa-arrow-trend-down"></i> 35% 단축
+                    </div>
+                </div>
+                <div class="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center group hover:border-brand-200 transition-colors">
+                    <div class="text-xs text-slate-500 mb-1">도로 안전 지수</div>
+                    <div class="text-2xl font-bold text-slate-800 group-hover:text-brand-600">92점</div>
+                    <div class="text-xs font-medium text-blue-600 mt-1 bg-blue-50 inline-block px-2 py-0.5 rounded-full">
+                        <i class="fa-solid fa-shield-heart"></i> 매우 안전
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chart Section -->
+            <div class="bg-white border border-slate-100 rounded-xl p-4 shadow-sm">
+                <h3 class="text-sm font-bold text-slate-700 mb-4 flex justify-between items-center">
+                    효율성 비교 분석
+                    <span class="text-[10px] font-normal text-slate-400">기존 경로 vs AI 최적 경로</span>
+                </h3>
+                <div class="chart-container">
+                    <canvas id="efficiencyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Route Control -->
+            <div class="space-y-3">
+                <div class="flex justify-between items-center">
+                    <label class="text-xs font-bold text-slate-400 uppercase tracking-wider">경로 설정</label>
+                    
+                    <!-- Edit Controls (Visible only in Edit Mode) -->
+                    <div id="edit-controls" class="hidden flex gap-2">
+                        <button onclick="saveEditMode()" class="text-xs bg-slate-800 text-white px-3 py-1 rounded hover:bg-slate-700 transition-colors">저장</button>
+                        <button onclick="cancelEditMode()" class="text-xs bg-slate-200 text-slate-600 px-3 py-1 rounded hover:bg-slate-300 transition-colors">취소</button>
+                    </div>
+                </div>
+                
+                <div class="bg-slate-50 rounded-xl p-1 border border-slate-200 relative">
+                    <div class="p-3 flex items-center gap-3 border-b border-slate-200">
+                        <div class="w-2 h-2 rounded-full bg-slate-400"></div>
+                        <span class="text-sm text-slate-600 font-medium">종로구청 (차고지)</span>
+                    </div>
+                    <div class="bg-white m-1 p-2 rounded-lg shadow-sm border border-slate-100 flex items-center gap-3 hover:bg-brand-50 transition-colors">
+                        <i class="fa-solid fa-grip-vertical text-slate-300 cursor-move"></i>
+                        <div class="flex-1">
+                            <div class="text-sm font-bold text-slate-800">북악스카이웨이 1구간</div>
+                            <div class="text-xs text-slate-500">급경사 / 우선순위 높음</div>
+                        </div>
+                        <span class="text-xs bg-red-100 text-red-600 px-2 py-1 rounded font-bold">1순위</span>
+                    </div>
+                    <div class="bg-white m-1 p-2 rounded-lg shadow-sm border border-slate-100 flex items-center gap-3 hover:bg-brand-50 transition-colors">
+                        <i class="fa-solid fa-grip-vertical text-slate-300 cursor-move"></i>
+                        <div class="flex-1">
+                            <div class="text-sm font-bold text-slate-800">평창문화로 진입로</div>
+                            <div class="text-xs text-slate-500">이면도로 / 상습결빙</div>
+                        </div>
+                        <span class="text-xs bg-amber-100 text-amber-600 px-2 py-1 rounded font-bold">2순위</span>
+                    </div>
+                </div>
+
+                <!-- Hidden White Button for Edit Mode -->
+                <button id="btn-start-edit" onclick="startEditMode()" class="hidden-trigger-btn w-full py-3 mt-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-pen-to-square"></i> 고급 경로 편집 (Admin)
+                </button>
+
+            </div>
+        </div>
+
+        <!-- Action Footer -->
+        <div class="p-5 border-t border-slate-100 bg-slate-50 md:rounded-b-2xl">
+            <div class="grid grid-cols-2 gap-3">
+                <button onclick="runSimulation()" class="flex items-center justify-center gap-2 bg-white border border-slate-300 text-slate-700 py-3 rounded-xl hover:bg-slate-100 font-medium text-sm transition-all">
+                    <i class="fa-solid fa-play"></i> 시뮬레이션
+                </button>
+                <button onclick="recalculateRoute()" id="btn-recalc" class="flex items-center justify-center gap-2 bg-brand-600 text-white py-3 rounded-xl hover:bg-brand-700 font-bold text-sm shadow-lg shadow-brand-200 transition-all">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> AI 재연산
+                </button>
+            </div>
+        </div>
+    </aside>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // --- 1. Map Initialization ---
+        const map = L.map('map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([37.6060, 126.9720], 15);
+
+        L.control.zoom({ position: 'bottomleft' }).addTo(map);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }).addTo(map);
+
+
+        // --- 2. Data ---
+        // 편집 가능한 경로 데이터 (Primary Route)
+        let primaryRoutePoints = [
+            [37.6000, 126.9600], // 시작점
+            [37.6025, 126.9615],
+            [37.6042, 126.9638], 
+            [37.6055, 126.9660],
+            [37.6068, 126.9685], // 주요 경유지
+            [37.6078, 126.9715],
+            [37.6085, 126.9750], 
+            [37.6080, 126.9785],
+            [37.6070, 126.9810]  // 종점
+        ];
+
+        // 편집 가능한 대체 경로 데이터 (Alt Route)
+        let altRoutePoints = [
+            [37.6000, 126.9600], 
+            [37.5990, 126.9610], 
+            [37.5975, 126.9645], 
+            [37.5965, 126.9680], 
+            [37.5975, 126.9710], 
+            [37.5995, 126.9735],
+            [37.6015, 126.9760], 
+            [37.6035, 126.9785], 
+            [37.6055, 126.9805], 
+            [37.6070, 126.9810]
+        ];
+
+        // 원본 백업용 (취소 시 복구)
+        let backupPrimary = [];
+        let backupAlt = [];
+
+        // --- 3. Rendering ---
+        let primaryPolyline, altPolyline;
+        let simulationMarker = null;
+        let editHandles = []; // 편집 핸들 마커들을 담을 배열
+
+        function drawRoutes() {
+            // 대안 경로
+            if(altPolyline) map.removeLayer(altPolyline);
+            altPolyline = L.polyline(altRoutePoints, {
+                color: '#94a3b8', weight: 4, dashArray: '5, 10', opacity: 0.6, lineCap: 'round'
+            }).addTo(map).bindTooltip("대안 경로 (수정 가능)", { sticky: true });
+
+            // 최적 경로
+            updatePrimaryPolyline();
+        }
+
+        function updatePrimaryPolyline() {
+            if(primaryPolyline) map.removeLayer(primaryPolyline);
+            primaryPolyline = L.polyline(primaryRoutePoints, {
+                color: '#3b82f6', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round'
+            }).addTo(map);
+            
+            primaryPolyline.bindPopup(`
+                <div class="font-bold text-slate-800 mb-1">AI 최적 경로 (Route A)</div>
+                <div class="text-xs text-slate-500">예상 시간: 2시간 15분</div>
+                <div class="text-xs text-blue-600 mt-1">안전 점수: 92점</div>
+            `);
+        }
+
+        drawRoutes();
+
+
+        // --- 4. Editing Logic (Updated for Both Routes) ---
+        let isEditMode = false;
+
+        function startEditMode() {
+            isEditMode = true;
+            // 백업
+            backupPrimary = JSON.parse(JSON.stringify(primaryRoutePoints));
+            backupAlt = JSON.parse(JSON.stringify(altRoutePoints));
+
+            // UI 업데이트
+            document.getElementById('btn-start-edit').classList.add('hidden');
+            document.getElementById('edit-controls').classList.remove('hidden');
+            document.getElementById('edit-toast').classList.remove('hidden');
+            document.querySelector('.leaflet-container').classList.add('edit-mode');
+
+            // 1. Primary Route 핸들 생성
+            createHandles(primaryRoutePoints, 'primary');
+            
+            // 2. Alt Route 핸들 생성
+            createHandles(altRoutePoints, 'alt');
+        }
+
+        function createHandles(pointsArray, type) {
+            pointsArray.forEach((point, index) => {
+                const handle = L.marker(point, {
+                    draggable: true,
+                    icon: L.divIcon({
+                        className: 'custom-div-icon',
+                        // 타입에 따라 핸들 스타일 다르게 (메인: 파랑/흰색, 대체: 회색/흰색)
+                        html: `<div class="edit-handle ${type === 'alt' ? 'alt' : ''}"></div>`,
+                        iconSize: [14, 14],
+                        iconAnchor: [7, 7]
+                    })
+                }).addTo(map);
+
+                handle.on('drag', function(e) {
+                    const newLatLng = e.target.getLatLng();
+                    pointsArray[index] = [newLatLng.lat, newLatLng.lng];
+                    
+                    // 해당 선 다시 그리기
+                    if (type === 'primary') updatePrimaryPolyline();
+                    else {
+                        if(altPolyline) map.removeLayer(altPolyline);
+                        altPolyline = L.polyline(altRoutePoints, {
+                            color: '#94a3b8', weight: 4, dashArray: '5, 10', opacity: 0.6, lineCap: 'round'
+                        }).addTo(map);
+                    }
+                });
+
+                editHandles.push(handle);
+            });
+        }
+
+        function saveEditMode() {
+            cleanupEditMode();
+            alert("모든 경로 수정이 반영되었습니다. 안전 지수를 재산출합니다.");
+            recalculateRoute(); // 수정 후 자동 재연산 시뮬레이션
+        }
+
+        function cancelEditMode() {
+            // 원복
+            primaryRoutePoints = JSON.parse(JSON.stringify(backupPrimary));
+            altRoutePoints = JSON.parse(JSON.stringify(backupAlt));
+            
+            drawRoutes(); // 전체 다시 그리기
+            cleanupEditMode();
+        }
+
+        function cleanupEditMode() {
+            isEditMode = false;
+            // 핸들 모두 제거
+            editHandles.forEach(handle => map.removeLayer(handle));
+            editHandles = [];
+
+            // UI 복구
+            document.getElementById('btn-start-edit').classList.remove('hidden');
+            document.getElementById('edit-controls').classList.add('hidden');
+            document.getElementById('edit-toast').classList.add('hidden');
+            document.querySelector('.leaflet-container').classList.remove('edit-mode');
+        }
+
+
+        // --- 5. Chart & Simulation ---
+        const ctx = document.getElementById('efficiencyChart').getContext('2d');
+        const efficiencyChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['작업 시간 (분)', '안전 점수 (점)', '이동 거리 (km)'],
+                datasets: [
+                    { label: '기존 방식', data: [210, 75, 45], backgroundColor: '#cbd5e1', borderRadius: 4 },
+                    { label: 'AI 최적화', data: [135, 92, 38], backgroundColor: '#3b82f6', borderRadius: 4 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { position: 'bottom' } },
+                scales: { y: { beginAtZero: true }, x: { grid: { display: false } } }
+            }
+        });
+
+        function runSimulation() {
+            if (simulationMarker) map.removeLayer(simulationMarker);
+            
+            const plowIcon = L.divIcon({
+                html: '<i class="fa-solid fa-truck-plow snow-plow-icon"></i>',
+                iconSize: [24, 24], iconAnchor: [12, 12]
+            });
+
+            simulationMarker = L.marker(primaryRoutePoints[0], { icon: plowIcon }).addTo(map);
+            
+            let i = 0;
+            const interval = setInterval(() => {
+                if (i >= primaryRoutePoints.length) {
+                    clearInterval(interval);
+                    return;
+                }
+                simulationMarker.setLatLng(primaryRoutePoints[i]);
+                i++;
+            }, 500); 
+        }
+
+        function recalculateRoute() {
+            const btn = document.getElementById('btn-recalc');
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> 연산 중...';
+            
+            setTimeout(() => {
+                document.getElementById('alert-box').classList.remove('hidden');
+                efficiencyChart.data.datasets[1].data = [120, 96, 35]; 
+                efficiencyChart.update();
+                btn.innerHTML = '<i class="fa-solid fa-check"></i> 완료';
+                setTimeout(() => { btn.disabled = false; btn.innerHTML = originalText; }, 2000);
+            }, 1500);
+        }
+
+        function togglePanel() {
+            const panel = document.getElementById('right-panel');
+            panel.classList.toggle('translate-x-full');
+        }
+        
+        if (window.innerWidth >= 768) document.getElementById('right-panel').classList.remove('translate-x-full');
+        window.addEventListener('resize', () => {
+            if (window.innerWidth >= 768) document.getElementById('right-panel').classList.remove('translate-x-full');
+            else document.getElementById('right-panel').classList.add('translate-x-full');
+        });
+
+    </script>
+</body>
+</html>
